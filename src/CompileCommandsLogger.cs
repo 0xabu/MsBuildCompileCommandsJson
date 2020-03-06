@@ -59,25 +59,83 @@ public class CompileCommandsLogger : Logger
         if (args is TaskCommandLineEventArgs taskArgs && taskArgs.TaskName == "CL")
         {
             string dirname = Path.GetDirectoryName(taskArgs.ProjectFile);
-
             string[] cmdArgs = CommandLineToArgs(taskArgs.CommandLine);
+
+            // Options that consume the following argument.
+            string[] optionsWithParam = {
+                "D", "I", "F", "U", "FI", "FU", 
+                "analyze:log", "analyze:stacksize", "analyze:max_paths",
+                "analyze:ruleset", "analyze:plugin"};
+
+            List<string> maybeFilenames = new List<string>();
             List<string> filenames = new List<string>();
+            bool allFilenamesAreSources = false;
+
             for (int i = 1; i < cmdArgs.Length; i++)
             {
-                if (cmdArgs[i] == "/D")
+                bool isOption = cmdArgs[i].StartsWith("/") || cmdArgs[i].StartsWith("-");
+                string option = isOption ? cmdArgs[i].Substring(1) : "";
+
+                if (isOption && Array.Exists(optionsWithParam, e => e == option))
                 {
                     i++; // skip next arg
                 }
-                else if (cmdArgs[i].StartsWith("/"))
+                else if (option == "Tc" || option == "Tp")
+                {
+                    // next arg is definitely a source file
+                    if (i + 1 < cmdArgs.Length)
+                    {
+                        filenames.Add(cmdArgs[i + 1]);
+                    }
+                }
+                else if (option.StartsWith("Tc") || option.StartsWith("Tp"))
+                {
+                    // rest of this arg is definitely a source file
+                    filenames.Add(option.Substring(2));
+                }
+                else if (option == "TC" || option == "TP")
+                {
+                    // all inputs are treated as source files
+                    allFilenamesAreSources = true;
+                }
+                else if (option == "link")
+                {
+                    break; // only linker options follow
+                }
+                else if (isOption || cmdArgs[i].StartsWith("@"))
                 {
                     // other argument, ignore it
                 }
                 else
                 {
-                    filenames.Add(cmdArgs[i]);
+                    // non-argument, add it to our list of potential sources
+                    maybeFilenames.Add(cmdArgs[i]);
                 }
             }
 
+            // Iterate over potential sources, and decide (based on the filename)
+            // whether they are source inputs.
+            foreach (string filename in maybeFilenames)
+            {
+                if (allFilenamesAreSources)
+                {
+                    filenames.Add(filename);
+                }
+                else
+                {
+                    int suffixPos = filename.LastIndexOf('.');
+                    if (suffixPos != -1)
+                    {
+                        string ext = filename.Substring(suffixPos + 1).ToLowerInvariant();
+                        if (ext == "c" || ext == "cxx" || ext == "cpp")
+                        {
+                            filenames.Add(filename);
+                        }
+                    }
+                }
+            }
+
+            // For each source file, emit a JSON entry
             foreach (string filename in filenames)
             {
                 // Terminate the preceding entry

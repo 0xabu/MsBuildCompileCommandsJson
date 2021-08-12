@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <TargetFrameworks>netstandard2.0</TargetFrameworks>
-    <RootNamespace>CompileCommandsLogger</RootNamespace>
+    <RootNamespace>CompileCommandsJson</RootNamespace>
     <Product />
     <Description>A logger for MSBuild that emits a compile_commands.json file.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

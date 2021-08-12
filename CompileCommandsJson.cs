@@ -9,7 +9,7 @@ using Microsoft.Build.Framework;
 using Microsoft.Build.Utilities;
 
 /// <summary>
-/// MSBuild logger to emit a compile_commands.json file.
+/// MSBuild logger to emit a compile_commands.json file from a C++ project build.
 /// </summary>
 /// <remarks>
 /// Based on the work of:
@@ -21,7 +21,7 @@ using Microsoft.Build.Utilities;
 /// Format spec:
 ///   https://clang.llvm.org/docs/JSONCompilationDatabase.html
 /// </remarks>
-public class CompileCommandsLogger : Logger
+public class CompileCommandsJson : Logger
 {
     public override void Initialize(IEventSource eventSource)
     {

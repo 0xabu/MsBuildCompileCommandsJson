@@ -15,19 +15,26 @@ using Microsoft.Build.Utilities;
 /// Based on the work of:
 ///   * Kirill Osenkov and the MSBuildStructuredLog project.
 ///   * Dave Glick's MsBuildPipeLogger.
+///
+/// Ref for MSBuild Logger API:
+///   https://docs.microsoft.com/en-us/visualstudio/msbuild/build-loggers
 /// Format spec:
-/// https://clang.llvm.org/docs/JSONCompilationDatabase.html
+///   https://clang.llvm.org/docs/JSONCompilationDatabase.html
 /// </remarks>
 public class CompileCommandsLogger : Logger
 {
     public override void Initialize(IEventSource eventSource)
     {
+        // Default to writing compile_commands.json in the current directory,
+        // but permit it to be overridden by a parameter.
+        //
+        string outputFilePath = String.IsNullOrEmpty(Parameters) ? "compile_commands.json" : Parameters;
+
         try
         {
-            // Open the file
             const bool append = false;
             Encoding utf8WithoutBom = new UTF8Encoding(false);
-            this.streamWriter = new StreamWriter("compile_commands.json", append, utf8WithoutBom);
+            this.streamWriter = new StreamWriter(outputFilePath, append, utf8WithoutBom);
             this.firstLine = true;
             streamWriter.WriteLine("[");
         }
@@ -42,7 +49,7 @@ public class CompileCommandsLogger : Logger
                 || ex is SecurityException
                 || ex is IOException)
             {
-                throw new LoggerException("Failed to create compile_commands.json: " + ex.Message);
+                throw new LoggerException("Failed to create " + outputFilePath + ": " + ex.Message);
             }
             else
             {
@@ -135,6 +142,10 @@ public class CompileCommandsLogger : Logger
                 }
             }
 
+            // simplify the compile command to avoid .. etc.
+            string compileCommand =
+                Path.GetFullPath(cmdArgs[0]) + taskArgs.CommandLine.Substring(cmdArgs[0].Length);
+
             // For each source file, emit a JSON entry
             foreach (string filename in filenames)
             {
@@ -154,7 +165,7 @@ public class CompileCommandsLogger : Logger
                     HttpUtility.JavaScriptStringEncode(dirname)));
                 streamWriter.WriteLine(String.Format(
                     " \"command\": \"{0}\",",
-                    HttpUtility.JavaScriptStringEncode(taskArgs.CommandLine)));
+                    HttpUtility.JavaScriptStringEncode(compileCommand)));
                 streamWriter.Write(String.Format(
                     " \"file\": \"{0}\"}}",
                     HttpUtility.JavaScriptStringEncode(filename)));

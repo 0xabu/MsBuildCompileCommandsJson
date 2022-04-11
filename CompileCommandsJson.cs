@@ -65,8 +65,21 @@ public class CompileCommandsJson : Logger
     {
         if (args is TaskCommandLineEventArgs taskArgs && taskArgs.TaskName == "CL")
         {
-            string dirname = Path.GetDirectoryName(taskArgs.ProjectFile);
-            string[] cmdArgs = CommandLineToArgs(taskArgs.CommandLine);
+            // taskArgs.CommandLine begins with the full path to the compiler, but that path is
+            // *not* escaped/quoted for a shell, and may contain spaces, such as C:\Program Files
+            // (x86)\Microsoft Visual Studio\... As a workaround for this misfeature, find the
+            // end of the path by searching for CL.exe. (This will fail if a user renames the
+            // compiler binary, or installs their tools to a path that includes "CL.exe ".)
+            const string clExe = "CL.exe ";
+            int clExeIndex = taskArgs.CommandLine.IndexOf(clExe);
+            if (clExeIndex == -1)
+            {
+                throw new LoggerException("Unexpected lack of CL.exe in " + taskArgs.CommandLine);
+            }
+
+            string compilerPath = taskArgs.CommandLine.Substring(0, clExeIndex + clExe.Length - 1);
+            string argsString = taskArgs.CommandLine.Substring(clExeIndex + clExe.Length).TrimStart();
+            string[] cmdArgs = CommandLineToArgs(argsString);
 
             // Options that consume the following argument.
             string[] optionsWithParam = {
@@ -78,7 +91,7 @@ public class CompileCommandsJson : Logger
             List<string> filenames = new List<string>();
             bool allFilenamesAreSources = false;
 
-            for (int i = 1; i < cmdArgs.Length; i++)
+            for (int i = 0; i < cmdArgs.Length; i++)
             {
                 bool isOption = cmdArgs[i].StartsWith("/") || cmdArgs[i].StartsWith("-");
                 string option = isOption ? cmdArgs[i].Substring(1) : "";
@@ -143,8 +156,8 @@ public class CompileCommandsJson : Logger
             }
 
             // simplify the compile command to avoid .. etc.
-            string compileCommand =
-                Path.GetFullPath(cmdArgs[0]) + taskArgs.CommandLine.Substring(cmdArgs[0].Length);
+            string compileCommand = '"' + Path.GetFullPath(compilerPath) + "\" " + argsString;
+            string dirname = Path.GetDirectoryName(taskArgs.ProjectFile);
 
             // For each source file, emit a JSON entry
             foreach (string filename in filenames)

@@ -3,20 +3,32 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security;
-using System.Text;
-using System.Web;
 using Microsoft.Build.Framework;
 using Microsoft.Build.Utilities;
+using Newtonsoft.Json;
 
 /// <summary>
 /// MSBuild logger to emit a compile_commands.json file from a C++ project build.
+/// Arguments (all arguments are optional and order does not matter): 
+/// path:[a valid path, relative or absolute] - Where to output the file, if no option is specified it will output in the working directory
+/// task:[task name] - A custom task name to search for. We check if the task name from MSBuild contains this string.
+///     This is useful for distributed build systems that sometimes use their own custom CL task.
+///
+/// Argument examples
+/// None - /logger:path/to/CompileCommands.dll
+/// Path - /logger:path/to/CompileCommands.dll;path:custom/path/here.json
+/// Task - /logger:path/to/CompileCommands.dll;task:customTaskName
+/// Both - /logger:path/to/CompileCommands.dll;path:custom/path/here.json,task:customTaskName
+///
 /// </summary>
 /// <remarks>
 /// Based on the work of:
 ///   * Kirill Osenkov and the MSBuildStructuredLog project.
 ///   * Dave Glick's MsBuildPipeLogger.
+///   * Iterative build support and custom task names added by Andrew Richardson
 ///
-/// Ref for MSBuild Logger API:
+///
+/// Ref for MSBuild Logge\r API:
 ///   https://docs.microsoft.com/en-us/visualstudio/msbuild/build-loggers
 /// Format spec:
 ///   https://clang.llvm.org/docs/JSONCompilationDatabase.html
@@ -27,16 +39,52 @@ public class CompileCommandsJson : Logger
     {
         // Default to writing compile_commands.json in the current directory,
         // but permit it to be overridden by a parameter.
-        //
-        string outputFilePath = String.IsNullOrEmpty(Parameters) ? "compile_commands.json" : Parameters;
+        outputFilePath = "compile_commands.json";
 
+        if(!string.IsNullOrEmpty(Parameters))
+        {
+            string[] args = Parameters.Split(',');
+
+            for(int i = 0; i < args.Length; ++i)
+            {
+                string arg = args[i];
+                if(arg.ToLower().StartsWith("path:"))
+                {
+                    outputFilePath = arg.Substring(5);
+                }
+                else if(arg.ToLower().StartsWith("task:"))
+                {
+                    customTask = arg.Substring(5);
+                }
+                else
+                {
+                    throw new LoggerException($"Unknown argument in compile command logger: {arg}");
+                }
+            }
+        }
+
+        eventSource.AnyEventRaised += EventSource_AnyEventRaised;
         try
         {
-            const bool append = false;
-            Encoding utf8WithoutBom = new UTF8Encoding(false);
-            this.streamWriter = new StreamWriter(outputFilePath, append, utf8WithoutBom);
-            this.firstLine = true;
-            streamWriter.WriteLine("[");
+            commandLookup = new Dictionary<string, CompileCommand>();
+            if (File.Exists(outputFilePath))
+            {
+                compileCommands = JsonConvert.DeserializeObject<List<CompileCommand>>(File.ReadAllText(outputFilePath));
+            }
+
+			//AR - Not an else because it is possible for JsonConvert.DeserializeObject to return null
+            if(compileCommands == null)
+            {
+                compileCommands = new List<CompileCommand>();
+            }
+
+            //AR - Create a dictionary for cleaner and faster cache lookup
+            //We could refactor the code to read and write directly to the cache
+            //but there is no discernable performance difference even on very large code bases
+            foreach(CompileCommand command in compileCommands)
+            {
+                commandLookup.Add(command.file, command);
+            }
         }
         catch (Exception ex)
         {
@@ -49,7 +97,7 @@ public class CompileCommandsJson : Logger
                 || ex is SecurityException
                 || ex is IOException)
             {
-                throw new LoggerException("Failed to create " + outputFilePath + ": " + ex.Message);
+                throw new LoggerException($"Failed to create {outputFilePath}: {ex.Message}");
             }
             else
             {
@@ -58,13 +106,14 @@ public class CompileCommandsJson : Logger
             }
         }
 
-        eventSource.AnyEventRaised += EventSource_AnyEventRaised;
     }
 
     private void EventSource_AnyEventRaised(object sender, BuildEventArgs args)
     {
-        if (args is TaskCommandLineEventArgs taskArgs && taskArgs.TaskName == "CL")
+        if (args is TaskCommandLineEventArgs taskArgs 
+            && (taskArgs.TaskName == "CL" || (!string.IsNullOrEmpty(customTask) && taskArgs.TaskName.Contains(customTask))))
         {
+            
             // taskArgs.CommandLine begins with the full path to the compiler, but that path is
             // *not* escaped/quoted for a shell, and may contain spaces, such as C:\Program Files
             // (x86)\Microsoft Visual Studio\... As a workaround for this misfeature, find the
@@ -74,7 +123,7 @@ public class CompileCommandsJson : Logger
             int clExeIndex = taskArgs.CommandLine.IndexOf(clExe);
             if (clExeIndex == -1)
             {
-                throw new LoggerException("Unexpected lack of CL.exe in " + taskArgs.CommandLine);
+                throw new LoggerException($"Unexpected lack of CL.exe in {taskArgs.CommandLine}");
             }
 
             string compilerPath = taskArgs.CommandLine.Substring(0, clExeIndex + clExe.Length - 1);
@@ -105,6 +154,7 @@ public class CompileCommandsJson : Logger
                     // next arg is definitely a source file
                     if (i + 1 < cmdArgs.Length)
                     {
+
                         filenames.Add(cmdArgs[i + 1]);
                     }
                 }
@@ -159,29 +209,28 @@ public class CompileCommandsJson : Logger
             string compileCommand = '"' + Path.GetFullPath(compilerPath) + "\" " + argsString;
             string dirname = Path.GetDirectoryName(taskArgs.ProjectFile);
 
-            // For each source file, emit a JSON entry
+            // For each source file, a CompileCommand entry
             foreach (string filename in filenames)
             {
-                // Terminate the preceding entry
-                if (firstLine)
+                // AR - Iterative build support, we loaded in the existing compile_commands file in the init.
+                // Now we check to see if an entry for the filename exists, if if does we overwrite
+                // the previous result, if it doesn't we add a new entry. We then write the entire list
+                // when the logger shuts down.
+                CompileCommand command;
+                if (commandLookup.ContainsKey(filename))
                 {
-                    firstLine = false;
+                    command = commandLookup[filename];
+                    command.file = filename;
+                    command.directory = dirname;
+                    command.command = compileCommand;
                 }
                 else
                 {
-                    streamWriter.WriteLine(",");
+                    command = new CompileCommand() { file = filename, directory = dirname, command = compileCommand };
+                    compileCommands.Add(command);
+                    commandLookup.Add(filename, command);
                 }
 
-                // Write one entry
-                streamWriter.WriteLine(String.Format(
-                    "{{\"directory\": \"{0}\",",
-                    HttpUtility.JavaScriptStringEncode(dirname)));
-                streamWriter.WriteLine(String.Format(
-                    " \"command\": \"{0}\",",
-                    HttpUtility.JavaScriptStringEncode(compileCommand)));
-                streamWriter.Write(String.Format(
-                    " \"file\": \"{0}\"}}",
-                    HttpUtility.JavaScriptStringEncode(filename)));
             }
         }
     }
@@ -215,15 +264,19 @@ public class CompileCommandsJson : Logger
 
     public override void Shutdown()
     {
-        if (!firstLine)
-        {
-            streamWriter.WriteLine();
-        }
-        streamWriter.WriteLine("]");
-        streamWriter.Close();
+        File.WriteAllText(outputFilePath, JsonConvert.SerializeObject(compileCommands, Formatting.Indented));
         base.Shutdown();
     }
 
-    private StreamWriter streamWriter;
-    private bool firstLine;
+    class CompileCommand
+    {
+        public string directory;
+        public string command;
+        public string file;
+    }
+
+    string customTask;
+    string outputFilePath;
+    private List<CompileCommand> compileCommands;
+    private Dictionary<string, CompileCommand> commandLookup;
 }

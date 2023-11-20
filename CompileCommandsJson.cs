@@ -70,8 +70,8 @@ public class CompileCommandsJson : Logger
             // (x86)\Microsoft Visual Studio\... As a workaround for this misfeature, find the
             // end of the path by searching for CL.exe. (This will fail if a user renames the
             // compiler binary, or installs their tools to a path that includes "CL.exe ".)
-            const string clExe = "CL.exe ";
-            int clExeIndex = taskArgs.CommandLine.IndexOf(clExe);
+            const string clExe = "cl.exe ";
+            int clExeIndex = taskArgs.CommandLine.ToLower().IndexOf(clExe);
             if (clExeIndex == -1)
             {
                 throw new LoggerException("Unexpected lack of CL.exe in " + taskArgs.CommandLine);
